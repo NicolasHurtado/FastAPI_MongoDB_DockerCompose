@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 import httpx
 import pandas as pd
 from pymongo import MongoClient
@@ -24,7 +24,12 @@ async def root():
 async def get_matches(request: Request):
     date_init = request.query_params.get("date_init")
     date_end = request.query_params.get('date_end')
-    goals = request.query_params.get('goals',0)
+    goals = request.query_params.get('goals')
+
+    # Verificar si los parámetros obligatorios están presentes
+    if not date_init or not date_end:
+        raise HTTPException(status_code=400, detail="Parameters 'date_init' and 'date_end' are obligatory.")
+
     async with httpx.AsyncClient() as client:
         url = f"https://api.football-data.org/v4/matches?competitions=PL&status=FINISHED&dateFrom={date_init}&dateTo={date_end}"
         headers = {"X-Auth-Token": API_KEY}
@@ -34,8 +39,7 @@ async def get_matches(request: Request):
     
     matches_df = pd.DataFrame(data["matches"])
     matches_df["total_goals"] = matches_df.apply(lambda row: row["score"]["fullTime"]["home"] + row["score"]["fullTime"]["away"], axis=1)
-    filtered_matches_df = matches_df[matches_df["total_goals"] >= int(goals)]
-
+    filtered_matches_df = matches_df[matches_df["total_goals"] >= int(goals)] if goals else matches_df    
     filtered_matches = filtered_matches_df[["homeTeam", "awayTeam", "matchday", "score", "utcDate"]]
     filtered_matches["Score"] = filtered_matches.apply(lambda row: f"{row['score']['fullTime']['home']} - {row['score']['fullTime']['away']}", axis=1)
     filtered_matches["When"] = pd.to_datetime(filtered_matches["utcDate"]).dt.strftime('%Y-%m-%d %H:%M:%S')
@@ -55,7 +59,6 @@ async def get_matches(request: Request):
 async def get_list(request: Request):
     # Consultar todos los registros de la colección de MongoDB
     
-    print('team',request.query_params.get("team_name"))
     team_name = request.query_params.get("team_name")
     page = int(request.query_params.get("page", 1))  # Página actual (por defecto 1)
     page_size = 5  # Tamaño de la página
