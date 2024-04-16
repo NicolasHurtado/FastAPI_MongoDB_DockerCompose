@@ -3,6 +3,7 @@ import httpx
 import pandas as pd
 from pymongo import MongoClient
 import traceback
+from bson.regex import Regex
 
 # Configurar la conexión a MongoDB
 client = MongoClient("mongodb://mongodb:27017/")
@@ -10,7 +11,8 @@ db = client["mydatabase"]
 matches_collection = db["matches"]
 
 app = FastAPI()
-API_KEY = "d75e1a9df5b24ef7b38212d36842ecde"  # Reemplaza "TU_CLAVE_DE_API" con tu propia clave
+
+API_KEY = "d75e1a9df5b24ef7b38212d36842ecde"  # key api.football
 
 @app.get("/")
 async def root():
@@ -52,10 +54,39 @@ async def get_matches(request: Request):
 @app.get("/list")
 async def get_list(request: Request):
     # Consultar todos los registros de la colección de MongoDB
-    matches_data = list(matches_collection.find())
+    
+    print('team',request.query_params.get("team_name"))
+    team_name = request.query_params.get("team_name")
+    page = int(request.query_params.get("page", 1))  # Página actual (por defecto 1)
+    page_size = 5  # Tamaño de la página
+    
+    # Calcular el número de documentos que se deben omitir para esta página
+    skip = (page - 1) * page_size
+    # Si se proporciona el parámetro de consulta "team_name", filtrar los registros
+    if team_name:
+        query = {}
+        regex = Regex(team_name, "i")  # "i" para que sea insensible a mayúsculas y minúsculas
+        query["$or"] = [
+            {"HomeTeam.name": {"$regex": regex}},
+            {"AwayTeam.name": {"$regex": regex}}
+        ]
+        # Consultar la base de datos con el filtro aplicado
+        total_count = matches_collection.count_documents(query)
+        matches_data = list(matches_collection.find(query).skip(skip).limit(page_size))
+    else:
+        total_count = matches_collection.count_documents({})
+        matches_data = list(matches_collection.find().skip(skip).limit(page_size))
     # Convertir ObjectId a cadenas en los diccionarios
     for match in matches_data:
         match["_id"] = str(match.get("_id"))
+    
+    # Calcular si existe una página siguiente
+    has_next_page = (skip + page_size) < total_count
 
-    return matches_data
+    return {
+        "total_count": total_count,
+        "page": page,
+        "has_next_page": has_next_page,
+        "matches": matches_data
+    }
 
