@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Query, Depends
 import httpx
 import pandas as pd
 from pymongo import MongoClient
@@ -12,6 +12,7 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+from utils import MatchesQueryParams, ListQueryParams
 
 # Configurar la conexión a MongoDB
 client = MongoClient("mongodb://mongodb:27017/")
@@ -45,11 +46,15 @@ async def root():
 
 
 @app.get("/filter_matches/")
-async def get_matches(request: Request):
+async def get_matches(request: Request, params: MatchesQueryParams = Depends()):
     date_init_str = request.query_params.get("date_init")
     date_end_str = request.query_params.get('date_end')
     goals = request.query_params.get('goals')
 
+    # Verificar si los parámetros obligatorios están presentes
+    if not date_init_str or not date_end_str:
+        raise HTTPException(status_code=400, detail="Parameters 'date_init' and 'date_end' are obligatory.")
+    
     # Convertir las cadenas de fecha en objetos de fecha
     date_init = datetime.strptime(date_init_str, '%Y-%m-%d')
     date_end = datetime.strptime(date_end_str, '%Y-%m-%d')
@@ -59,46 +64,52 @@ async def get_matches(request: Request):
         raise HTTPException(status_code=400, detail="Parameter 'date_end' cannot be more than 10 days after 'date_init'.")
 
 
-    # Verificar si los parámetros obligatorios están presentes
-    if not date_init or not date_end:
-        raise HTTPException(status_code=400, detail="Parameters 'date_init' and 'date_end' are obligatory.")
     
-    while True:  # Bucle infinito para reintentar la solicitud
-        try:
-            print('paso1')
-            async with httpx.AsyncClient() as client:
-                url = f"https://api.football-data.org/v4/matches?competitions=PL&status=FINISHED&dateFrom={date_init_str}&dateTo={date_end_str}"
-                headers = {"X-Auth-Token": API_KEY}
-                response = await client.get(url, headers=headers)
-                print('paso2')
-                response.raise_for_status()  # Lanza una excepción si hay un error en la respuesta HTTP
-                data = response.json()
-                filtered_matches = []
-                
-                matches_df = pd.DataFrame(data["matches"])
-                matches_df["total_goals"] = matches_df.apply(lambda row: row["score"]["fullTime"]["home"] + row["score"]["fullTime"]["away"], axis=1)
-                filtered_matches_df = matches_df[matches_df["total_goals"] >= int(goals)] if goals else matches_df    
-                filtered_matches = filtered_matches_df[["homeTeam", "awayTeam", "matchday", "score", "utcDate"]]
-                filtered_matches["Score"] = filtered_matches.apply(lambda row: f"{row['score']['fullTime']['home']} - {row['score']['fullTime']['away']}", axis=1)
-                filtered_matches["When"] = pd.to_datetime(filtered_matches["utcDate"]).dt.strftime('%Y-%m-%d %H:%M:%S')
-                filtered_matches["HomeTeam"] = filtered_matches.apply(lambda row: {"id": row["homeTeam"]["id"], "name": row["homeTeam"]["name"]}, axis=1)
-                filtered_matches["AwayTeam"] = filtered_matches.apply(lambda row: {"id": row["awayTeam"]["id"], "name": row["awayTeam"]["name"]}, axis=1)
-                filtered_matches = filtered_matches[["HomeTeam", "AwayTeam", "matchday", "Score", "When"]]
-                filtered_matches = filtered_matches.rename(columns={"matchday": "Matchday"})
-                # Convertir los datos filtrados a una lista de diccionarios
-                matches_data = filtered_matches.to_dict(orient="records")
-                # Insertar los registros en la colección de MongoDB
-                matches_collection.insert_many(matches_data)
-                
-                return filtered_matches.to_dict(orient="records")
-        except httpx.HTTPError as e:
-            print(f"Ocurrió un error al hacer la solicitud: {e}")
-            await asyncio.sleep(2)  # Espera un segundo antes de reintentar
+    # Inicializar el trazador
+    tracer = tracer_provider.get_tracer(__name__)
+    span_attributes = {
+        "date_init_str": date_init_str,
+        "date_end_str": date_end_str,
+        "goals": goals
+    }
+    with tracer.start_as_current_span("fetch_matches", attributes=span_attributes):
+        while True:  # Bucle infinito para reintentar la solicitud
+            try:
+                print('paso1')
+                async with httpx.AsyncClient() as client:
+                    url = f"https://api.football-data.org/v4/matches?competitions=PL&status=FINISHED&dateFrom={date_init_str}&dateTo={date_end_str}"
+                    headers = {"X-Auth-Token": API_KEY}
+                    response = await client.get(url, headers=headers)
+                    print('paso2')
+                    response.raise_for_status()  # Lanza una excepción si hay un error en la respuesta HTTP
+                    data = response.json()
+                    filtered_matches = []
+
+                    matches_df = pd.DataFrame(data["matches"])
+                    matches_df["total_goals"] = matches_df.apply(lambda row: row["score"]["fullTime"]["home"] + row["score"]["fullTime"]["away"], axis=1)
+                    filtered_matches_df = matches_df[matches_df["total_goals"] >= int(goals)] if goals else matches_df    
+                    filtered_matches = filtered_matches_df[["homeTeam", "awayTeam", "matchday", "score", "utcDate"]]
+                    filtered_matches["Score"] = filtered_matches.apply(lambda row: f"{row['score']['fullTime']['home']} - {row['score']['fullTime']['away']}", axis=1)
+                    filtered_matches["When"] = pd.to_datetime(filtered_matches["utcDate"]).dt.strftime('%Y-%m-%d %H:%M:%S')
+                    filtered_matches["HomeTeam"] = filtered_matches.apply(lambda row: {"id": row["homeTeam"]["id"], "name": row["homeTeam"]["name"]}, axis=1)
+                    filtered_matches["AwayTeam"] = filtered_matches.apply(lambda row: {"id": row["awayTeam"]["id"], "name": row["awayTeam"]["name"]}, axis=1)
+                    filtered_matches = filtered_matches[["HomeTeam", "AwayTeam", "matchday", "Score", "When"]]
+                    filtered_matches = filtered_matches.rename(columns={"matchday": "Matchday"})
+                    # Convertir los datos filtrados a una lista de diccionarios
+                    matches_data = filtered_matches.to_dict(orient="records")
+                    # Insertar los registros en la colección de MongoDB
+                    with tracer.start_as_current_span("insert_into_mongodb"):
+                        matches_collection.insert_many(matches_data)
+                    return filtered_matches.to_dict(orient="records")
+            except httpx.HTTPError as e:
+                print(f"Ocurrió un error al hacer la solicitud: {e}")
+                await asyncio.sleep(2)  # Espera un segundo antes de reintentar
 
 
 @app.get("/list")
-async def get_list(request: Request):
-    # Consultar todos los registros de la colección de MongoDB
+async def get_list(request: Request, params: ListQueryParams = Depends() ):
+    # Inicializar el trazador
+    tracer = tracer_provider.get_tracer(__name__)
     
     team_name = request.query_params.get("team_name")
     page = int(request.query_params.get("page", 1))  # Página actual (por defecto 1)
@@ -115,11 +126,15 @@ async def get_list(request: Request):
             {"AwayTeam.name": {"$regex": regex}}
         ]
         # Consultar la base de datos con el filtro aplicado
-        total_count = matches_collection.count_documents(query)
-        matches_data = list(matches_collection.find(query).skip(skip).limit(page_size))
+        with tracer.start_as_current_span("count_team_query_list"):
+            total_count = matches_collection.count_documents(query)
+        with tracer.start_as_current_span("team_query_list"):
+            matches_data = list(matches_collection.find(query).skip(skip).limit(page_size))
     else:
-        total_count = matches_collection.count_documents({})
-        matches_data = list(matches_collection.find().skip(skip).limit(page_size))
+        with tracer.start_as_current_span("count_query_list"):
+            total_count = matches_collection.count_documents({})
+        with tracer.start_as_current_span("query_list"):
+            matches_data = list(matches_collection.find().skip(skip).limit(page_size))
     # Convertir ObjectId a cadenas en los diccionarios
     for match in matches_data:
         match["_id"] = str(match.get("_id"))
