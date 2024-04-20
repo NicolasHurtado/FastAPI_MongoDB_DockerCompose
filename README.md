@@ -11,16 +11,17 @@
 
 ## Verificar información del servicio desplegado / Verify deployed service information
 - http://127.0.0.1:8000/ in your browser
+- http://127.0.0.1:8000/docs/ API documentation
   
 ## Ejemplos de uso / Use examples
 - http://127.0.0.1:8000/filter_matches_date_goals/?date_init=2024-04-05&date_end=2024-04-10&goals=3 
-### set date_init and date_end for range query ( Obligatory )
-### set minimum goals in match for query ( Obligatory )
+- set date_init and date_end for range query ( Obligatory )
+- set minimum goals in match for query ( Obligatory )
 
 ## Listar documentos creados en db / list documents created on db
 - http://127.0.0.1:8000/list?team_name=liverpool&page=1
-### set team_name for the query filter ( No Obligatory )
-### set page for the query filter ( Obligatory )
+- set team_name for the query filter ( No Obligatory )
+- set page for the query filter ( Obligatory )
 
 ## Ejecutar test / Test execute
 - docker exec -it fastapi_app bash
