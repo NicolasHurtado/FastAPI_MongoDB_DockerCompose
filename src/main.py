@@ -12,12 +12,15 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+from opentelemetry.instrumentation.pymongo import PymongoInstrumentor
 from utils import MatchesQueryParams, ListQueryParams
 
 # Configurar la conexión a MongoDB
-client = MongoClient("mongodb://mongodb:27017/")
-db = client["mydatabase"]
-matches_collection = db["matches"]
+PymongoInstrumentor().instrument()
+
+def get_prod_client():
+    return MongoClient("mongodb://mongodb:27017/")
+
 
 # Set up the tracer provider
 trace.set_tracer_provider(
@@ -33,7 +36,6 @@ jaeger_exporter = JaegerExporter(
 
 #Add the Jaeger exporter to the tracer provider
 tracer_provider.add_span_processor(BatchSpanProcessor(jaeger_exporter))
-
 app = FastAPI()
 FastAPIInstrumentor.instrument_app(app)
 
@@ -44,13 +46,13 @@ async def root():
     return {"message": "¡Bienvenido a tu aplicación de FastAPI!"}
 
 
-
 @app.get("/filter_matches/")
-async def get_matches(request: Request, params: MatchesQueryParams = Depends()):
+async def get_matches(request: Request, params: MatchesQueryParams = Depends(), client: MongoClient = Depends(get_prod_client)):
     date_init_str = request.query_params.get("date_init")
     date_end_str = request.query_params.get('date_end')
     goals = request.query_params.get('goals')
-
+    db = client["mydatabase"]
+    matches_collection = db["matches"]
     # Verificar si los parámetros obligatorios están presentes
     if not date_init_str or not date_end_str:
         raise HTTPException(status_code=400, detail="Parameters 'date_init' and 'date_end' are obligatory.")
@@ -80,7 +82,6 @@ async def get_matches(request: Request, params: MatchesQueryParams = Depends()):
                     url = f"https://api.football-data.org/v4/matches?competitions=PL&status=FINISHED&dateFrom={date_init_str}&dateTo={date_end_str}"
                     headers = {"X-Auth-Token": API_KEY}
                     response = await client.get(url, headers=headers)
-                    print('paso2')
                     response.raise_for_status()  # Lanza una excepción si hay un error en la respuesta HTTP
                     data = response.json()
                     filtered_matches = []
@@ -98,8 +99,7 @@ async def get_matches(request: Request, params: MatchesQueryParams = Depends()):
                     # Convertir los datos filtrados a una lista de diccionarios
                     matches_data = filtered_matches.to_dict(orient="records")
                     # Insertar los registros en la colección de MongoDB
-                    with tracer.start_as_current_span("insert_into_mongodb"):
-                        matches_collection.insert_many(matches_data)
+                    matches_collection.insert_many(matches_data)
                     return filtered_matches.to_dict(orient="records")
             except httpx.HTTPError as e:
                 print(f"Ocurrió un error al hacer la solicitud: {e}")
@@ -107,10 +107,9 @@ async def get_matches(request: Request, params: MatchesQueryParams = Depends()):
 
 
 @app.get("/list")
-async def get_list(request: Request, params: ListQueryParams = Depends() ):
-    # Inicializar el trazador
-    tracer = tracer_provider.get_tracer(__name__)
-    
+async def get_list(request: Request, params: ListQueryParams = Depends(), client: MongoClient = Depends(get_prod_client) ):
+    db = client["mydatabase"]
+    matches_collection = db["matches"]
     team_name = request.query_params.get("team_name")
     page = int(request.query_params.get("page", 1))  # Página actual (por defecto 1)
     page_size = 5  # Tamaño de la página
@@ -126,15 +125,11 @@ async def get_list(request: Request, params: ListQueryParams = Depends() ):
             {"AwayTeam.name": {"$regex": regex}}
         ]
         # Consultar la base de datos con el filtro aplicado
-        with tracer.start_as_current_span("count_team_query_list"):
-            total_count = matches_collection.count_documents(query)
-        with tracer.start_as_current_span("team_query_list"):
-            matches_data = list(matches_collection.find(query).skip(skip).limit(page_size))
+        total_count = matches_collection.count_documents(query)
+        matches_data = list(matches_collection.find(query).skip(skip).limit(page_size))
     else:
-        with tracer.start_as_current_span("count_query_list"):
-            total_count = matches_collection.count_documents({})
-        with tracer.start_as_current_span("query_list"):
-            matches_data = list(matches_collection.find().skip(skip).limit(page_size))
+        total_count = matches_collection.count_documents({})
+        matches_data = list(matches_collection.find().skip(skip).limit(page_size))
     # Convertir ObjectId a cadenas en los diccionarios
     for match in matches_data:
         match["_id"] = str(match.get("_id"))
