@@ -22,7 +22,12 @@
 ### set team_name for the query filter ( No Obligatory )
 ### set page for the query filter ( Obligatory )
 
-
+## Ejecutar test / Test execute
+- docker exec -it fastapi_app bash
+- pytest -s
+  
+## Check on Jaeger UI http://localhost:16686/
+![image](https://github.com/NicolasHurtado/FastAPI_MongoDB_DockerCompose/assets/47481664/65f7d6c8-e018-4d58-aca3-bdeef5f99c7d)
 
 #
 - ***Nicolas Hurtado C***
